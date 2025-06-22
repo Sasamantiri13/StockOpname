@@ -1,0 +1,12 @@
+import React from 'react';
+import StockOpnameDSS from './stock-opname-dss';
+
+function App() {
+  return (
+    <div>
+      <StockOpnameDSS />
+    </div>
+  );
+}
+
+export default App;
