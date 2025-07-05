@@ -1,0 +1,4 @@
+﻿Product_Code;Product_Name;Category;System_Stock;Actual_Stock; Unit_Cost ;Min_Stock;Max_Stock;Lead_Time_Days;Avg_Daily_Demand; Ordering_Cost ;Holding_Cost_Rate
+PRD001;Laptop Dell Inspiron;Electronics;50;48; Rp8.500.000 ;10;100;7;8; Rp50.000 ;0,25
+PRD002;Mouse Wireless;Accessories;120;125; Rp150.000 ;20;200;3;15; Rp50.000 ;0,25
+PRD003;Keyboard Mechanical;Accessories;80;75; Rp750.000 ;15;150;5;12; Rp50.000 ;0,25
