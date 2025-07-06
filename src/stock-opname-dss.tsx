@@ -951,7 +951,7 @@ setRecommendations(recs);
               <Package className="h-10 w-10 text-blue-600" />
               <div>
                 <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Pendukung Keputusan Stok Opname</h1>
-                <p className="text-sm sm:text-base text-gray-600">Sistem Terintegrasi Penunjang Keputusan Inventori Berbasis AHP, Dengan Penerapan ABC, EOQ, Safety Stock, dan Reorder Point</p>
+                <p className="text-sm sm:text-base text-gray-600">Sistem Terintegrasi Pendukung Keputusan Inventori Berbasis AHP, Dengan Penerapan ABC, EOQ, Safety Stock, dan Reorder Point</p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-3">
