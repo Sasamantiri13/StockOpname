@@ -192,7 +192,7 @@ const StockOpnameSimple: React.FC = () => {
             <div className="flex items-center space-x-3">
               <Package className="h-10 w-10 text-blue-600" />
               <div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Penunjang Keputusan Stock Opname</h1>
+                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Pendukung Keputusan Stock Opname</h1>
                 <p className="text-sm sm:text-base text-gray-600">Analisis mendalam dengan metode ABC, EOQ, dan Safety Stock</p>
               </div>
             </div>
