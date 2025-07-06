@@ -951,7 +951,7 @@ setRecommendations(recs);
               <Package className="h-10 w-10 text-blue-600" />
               <div>
                 <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Penunjang Keputusan Stok Opname</h1>
-                <p className="text-sm sm:text-base text-gray-600">Analisis mendalam dengan metode ABC, EOQ, Stok Pengaman dan Titik Pemesanan Ulang</p>
+                <p className="text-sm sm:text-base text-gray-600">Sistem Terintegrasi Penunjang Keputusan Inventori Berbasis AHP, Dengan Penerapan ABC, EOQ, Safety Stock, dan Reorder Point</p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-3">
@@ -1190,7 +1190,7 @@ setRecommendations(recs);
           <section className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-6">
             <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center">
               <AlertTriangle className="h-5 w-5 mr-2 text-red-600" />
-              🚨 Peringkat Urgensi - Tindakan Prioritas SPK
+              🚨 Peringkat Urgensi - Tindakan Prioritas SPK - Berdasarkan Metode AHP
             </h2>
             <p className="text-sm text-gray-600 mb-6">
               Item diurutkan berdasarkan skor urgensi menggunakan analisis multi-kriteria AHP (Analytic Hierarchy Process):
