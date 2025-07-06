@@ -67,7 +67,7 @@ interface Recommendation {
   action: string;
 }
 
-// Definisikan tipe data untuk urgency ranking
+// Definisikan tipe data untuk urgency ranking dengan AHP
 interface UrgencyItem {
   id: number;
   code: string;
@@ -82,7 +82,46 @@ interface UrgencyItem {
   reason: string;
   recommendedAction: string;
   timeframe: string;
+  // AHP specific fields
+  ahpCriteria: {
+    stockLevel: number;
+    financialImpact: number;
+    demandCriticality: number;
+    leadTimeRisk: number;
+  };
+  ahpWeights: {
+    stockLevel: number;
+    financialImpact: number;
+    demandCriticality: number;
+    leadTimeRisk: number;
+  };
+  ahpCompositeScore: number;
 }
+
+// AHP: Tentukan Bobot Kriteria Strategis (Step 1)
+// Strategic criteria weights based on Saaty Scale analysis
+const AHP_STRATEGIC_WEIGHTS = {
+  // Kriteria Strategis Utama
+  stockCriticality: 0.50,   // Kritisitas stok (emergency level)
+  businessValue: 0.30,      // Nilai bisnis dan dampak finansial
+  operationalRisk: 0.20     // Risiko operasional (lead time, demand)
+};
+
+// Sub-kriteria untuk setiap kriteria strategis
+const AHP_SUB_CRITERIA = {
+  stockCriticality: {
+    stockoutRisk: 0.60,      // Risiko kehabisan stok
+    stockLevel: 0.40         // Level stok saat ini
+  },
+  businessValue: {
+    inventoryValue: 0.70,    // Nilai inventory
+    abcClassification: 0.30   // Klasifikasi ABC
+  },
+  operationalRisk: {
+    demandVariability: 0.50, // Variabilitas permintaan
+    leadTimeRisk: 0.50       // Risiko lead time
+  }
+};
 
 const StockOpnameDSS: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([
@@ -519,58 +558,141 @@ const StockOpnameDSS: React.FC = () => {
     
 setRecommendations(recs);
 
-    // Calculate urgency ranking
+    // Calculate urgency ranking using AHP (Analytic Hierarchy Process)
+    // Following the schema: AHP → Prioritisasi Item → Analisis ABC berbasis Bobot AHP
     const urgencyRankings: UrgencyItem[] = finalAnalysis.filter(item => item.stockStatus !== 'Normal').map(item => {
-      // Base urgency score on stock status and ABC class
-      let urgencyScore = 0;
+      
+      // Step 1: AHP Kriteria Strategis Calculation (0-100 scale)
+      
+      // A. Stock Criticality (50% weight)
+      // A1. Stockout Risk (60% of Stock Criticality)
+      let stockoutRiskScore = 0;
+      if (item.stockStatus === 'Out of Stock') {
+        stockoutRiskScore = 100; // Critical - no stock available
+      } else if (item.stockStatus === 'Reorder') {
+        stockoutRiskScore = 85; // High risk - at reorder point
+      } else if (item.stockStatus === 'Low Stock') {
+        stockoutRiskScore = 70; // Medium-high risk - below minimum
+      } else if (item.stockStatus === 'Overstock') {
+        stockoutRiskScore = 20; // Low risk - excess stock
+      }
+      
+      // A2. Stock Level (40% of Stock Criticality)
+      let stockLevelScore = 0;
+      if (item.actualStock <= 0) {
+        stockLevelScore = 100;
+      } else if (item.actualStock <= item.minStock) {
+        stockLevelScore = 80;
+      } else if (item.actualStock >= item.maxStock) {
+        stockLevelScore = 30;
+      } else {
+        // Normal range - calculate relative position
+        const range = item.maxStock - item.minStock;
+        const position = (item.actualStock - item.minStock) / range;
+        stockLevelScore = 50 + (position * 30); // 50-80 range
+      }
+      
+      // Stock Criticality Composite Score
+      const stockCriticalityScore = (
+        stockoutRiskScore * AHP_SUB_CRITERIA.stockCriticality.stockoutRisk +
+        stockLevelScore * AHP_SUB_CRITERIA.stockCriticality.stockLevel
+      );
+      
+      // B. Business Value (30% weight)
+      // B1. Inventory Value (70% of Business Value)
+      const maxInventoryValue = Math.max(...finalAnalysis.map(i => i.inventoryValue));
+      const inventoryValueScore = maxInventoryValue > 0 ? (item.inventoryValue / maxInventoryValue) * 100 : 0;
+      
+      // B2. ABC Classification (30% of Business Value)
+      let abcScore = 0;
+      if (item.abcClass === 'A') {
+        abcScore = 100; // Highest priority
+      } else if (item.abcClass === 'B') {
+        abcScore = 60;  // Medium priority
+      } else {
+        abcScore = 30;  // Lower priority
+      }
+      
+      // Business Value Composite Score
+      const businessValueScore = (
+        inventoryValueScore * AHP_SUB_CRITERIA.businessValue.inventoryValue +
+        abcScore * AHP_SUB_CRITERIA.businessValue.abcClassification
+      );
+      
+      // C. Operational Risk (20% weight)
+      // C1. Demand Variability (50% of Operational Risk)
+      let demandVariabilityScore = 0;
+      if (item.turnoverRatio > 6) {
+        demandVariabilityScore = 80; // High variability - fast moving
+      } else if (item.turnoverRatio >= 3) {
+        demandVariabilityScore = 50; // Medium variability
+      } else {
+        demandVariabilityScore = 30; // Low variability - slow moving
+      }
+      
+      // C2. Lead Time Risk (50% of Operational Risk)
+      const maxLeadTime = Math.max(...finalAnalysis.map(i => i.leadTime));
+      const leadTimeRiskScore = maxLeadTime > 0 ? (item.leadTime / maxLeadTime) * 100 : 0;
+      
+      // Operational Risk Composite Score
+      const operationalRiskScore = (
+        demandVariabilityScore * AHP_SUB_CRITERIA.operationalRisk.demandVariability +
+        leadTimeRiskScore * AHP_SUB_CRITERIA.operationalRisk.leadTimeRisk
+      );
+      
+      // Final AHP Composite Score (Strategic Level)
+      const ahpCompositeScore = (
+        stockCriticalityScore * AHP_STRATEGIC_WEIGHTS.stockCriticality +
+        businessValueScore * AHP_STRATEGIC_WEIGHTS.businessValue +
+        operationalRiskScore * AHP_STRATEGIC_WEIGHTS.operationalRisk
+      );
+      
+      // Convert AHP score to 12-point urgency score for compatibility
+      const urgencyScore = Math.round((ahpCompositeScore / 100) * 12);
+      
+      // Determine urgency level based on AHP composite score
       let urgencyLevel: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
+      if (ahpCompositeScore >= 83) {
+        urgencyLevel = 'CRITICAL';
+      } else if (ahpCompositeScore >= 58) {
+        urgencyLevel = 'HIGH';
+      } else if (ahpCompositeScore >= 33) {
+        urgencyLevel = 'MEDIUM';
+      }
+      
+      // Set reason, action, and timeframe based on urgency level and stock status
       let reason = '';
       let recommendedAction = '';
       let timeframe = 'Within 1 month';
       let daysUntilStockout;
-      let businessImpact = item.inventoryValue || 0;
-
+      
       switch (item.stockStatus) {
         case 'Out of Stock':
-          urgencyScore += 10;
-          urgencyLevel = 'CRITICAL';
-          reason = 'Out of stock! Immediate action required.';
-          recommendedAction = `Order at least ${item.eoq} units now!`;
-          timeframe = 'Immediate';
+          reason = `Kritis! Stok habis dengan skor prioritas AHP tinggi (${ahpCompositeScore.toFixed(1)})`;
+          recommendedAction = `Pesanan darurat: ${item.eoq} unit segera!`;
+          timeframe = 'Segera';
           break;
         case 'Low Stock':
-          urgencyScore += 6;
-          urgencyLevel = 'HIGH';
-          reason = 'Low stock, approaching minimum levels.';
-          recommendedAction = `Consider ordering ${item.eoq} units.`;
-          timeframe = 'Within 1 week';
+          reason = `Peringatan stok rendah dengan skor AHP ${ahpCompositeScore.toFixed(1)} - item kelas ${item.abcClass}`;
+          recommendedAction = `Pesan ${item.eoq} unit dalam jangka waktu prioritas`;
+          timeframe = urgencyLevel === 'CRITICAL' ? 'Dalam 1 hari' : 'Dalam 1 minggu';
           daysUntilStockout = Math.floor(item.actualStock / item.avgDemand);
           break;
         case 'Reorder':
-          urgencyScore += 8;
-          urgencyLevel = 'HIGH';
-          reason = 'Stock at reorder level, plan immediate restock.';
-          recommendedAction = `Place an order for ${item.eoq} units.`;
-          timeframe = 'Within 10 days';
+          reason = `Titik reorder tercapai - analisis AHP menunjukkan prioritas ${urgencyLevel === 'CRITICAL' ? 'kritis' : urgencyLevel === 'HIGH' ? 'tinggi' : urgencyLevel === 'MEDIUM' ? 'sedang' : 'rendah'}`;
+          recommendedAction = `Buat pesanan untuk ${item.eoq} unit berdasarkan rekomendasi AHP`;
+          timeframe = urgencyLevel === 'CRITICAL' ? 'Dalam 2 hari' : 'Dalam 10 hari';
           break;
         case 'Overstock':
-          urgencyScore += 4;
-          urgencyLevel = 'MEDIUM';
-          reason = 'Overstock situation, reduce holding costs.';
-          recommendedAction = 'Run promotions or redistribute inventory.';
-          timeframe = 'Within 1 month';
+          reason = `Situasi stok berlebih - skor AHP: ${ahpCompositeScore.toFixed(1)} menunjukkan prioritas tindakan`;
+          recommendedAction = 'Terapkan strategi permintaan: promosi, redistribusi, atau strategi tahan';
+          timeframe = urgencyLevel === 'HIGH' ? 'Dalam 2 minggu' : 'Dalam 1 bulan';
           break;
       }
-
-      // Intensify urgency based on ABC classification
-      if (item.abcClass === 'A') {
-        urgencyScore += 2;
-        businessImpact *= 1.5;
-      } else if (item.abcClass === 'B') {
-        urgencyScore += 1;
-        businessImpact *= 1.2;
-      }
-  
+      
+      // Business impact with AHP weighting
+      const businessImpact = item.inventoryValue * (1 + (ahpCompositeScore / 100));
+      
       return { 
         id: item.id,
         code: item.code,
@@ -584,7 +706,21 @@ setRecommendations(recs);
         businessImpact,
         reason,
         recommendedAction,
-        timeframe
+        timeframe,
+        // AHP specific fields
+        ahpCriteria: {
+          stockLevel: stockLevelScore,
+          financialImpact: inventoryValueScore,
+          demandCriticality: demandVariabilityScore,
+          leadTimeRisk: leadTimeRiskScore
+        },
+        ahpWeights: {
+          stockLevel: AHP_STRATEGIC_WEIGHTS.stockCriticality,
+          financialImpact: AHP_STRATEGIC_WEIGHTS.businessValue,
+          demandCriticality: AHP_SUB_CRITERIA.operationalRisk.demandVariability,
+          leadTimeRisk: AHP_SUB_CRITERIA.operationalRisk.leadTimeRisk
+        },
+        ahpCompositeScore
       };
     });
 
@@ -633,7 +769,7 @@ setRecommendations(recs);
       setProducts([...products, newProduct]);
     } catch (error) {
       console.error('Error adding product:', error);
-      alert('Error adding product. Please try again.');
+      alert('Gagal menambahkan produk. Silakan coba lagi.');
     }
   };
 
@@ -647,17 +783,17 @@ setRecommendations(recs);
     
     switch (item.stockStatus) {
       case 'Out of Stock':
-        message = `🚨 EMERGENCY ORDER REQUIRED\n\nProduct: ${item.name} (${item.code})\nStatus: OUT OF STOCK - No inventory available!\nRecommended Order Quantity (EOQ): ${item.eoq} units\nEstimated Lead Time: ${item.leadTime} days\n\nIMMEDIATE ACTIONS:\n1. Contact supplier NOW\n2. Place emergency order for ${item.eoq} units\n3. Check if customers can wait\n4. Consider substitute products\n\nThis is a CRITICAL situation affecting sales!`;
+        message = `🚨 PESANAN DARURAT DIPERLUKAN\n\nProduk: ${item.name} (${item.code})\nStatus: HABIS STOK - Tidak ada inventori tersedia!\nKuantitas Pesanan yang Direkomendasikan (EOQ): ${item.eoq} unit\nEstimasi Lead Time: ${item.leadTime} hari\n\nTINDAKAN SEGERA:\n1. Hubungi pemasok SEKARANG\n2. Buat pesanan darurat untuk ${item.eoq} unit\n3. Periksa apakah pelanggan dapat menunggu\n4. Pertimbangkan produk pengganti\n\nIni adalah situasi KRITIS yang mempengaruhi penjualan!`;
         break;
       case 'Reorder':
-        message = `🔄 REORDER ACTION REQUIRED\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock} units\nReorder Point: ${item.reorderPoint} units\nRecommended Order Quantity (EOQ): ${item.eoq} units\nLead Time: ${item.leadTime} days\n\nACTIONS NEEDED:\n1. Place order for ${item.eoq} units within 10 days\n2. Monitor daily consumption\n3. Contact supplier to confirm delivery\n4. Update inventory forecasts`;
+        message = `🔄 TINDAKAN REORDER DIPERLUKAN\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock} unit\nTitik Reorder: ${item.reorderPoint} unit\nKuantitas Pesanan yang Direkomendasikan (EOQ): ${item.eoq} unit\nLead Time: ${item.leadTime} hari\n\nTINDAKAN YANG DIPERLUKAN:\n1. Buat pesanan untuk ${item.eoq} unit dalam 10 hari\n2. Pantau konsumsi harian\n3. Hubungi pemasok untuk konfirmasi pengiriman\n4. Perbarui perkiraan inventori`;
         break;
       case 'Low Stock':
-        message = `⚡ LOW STOCK WARNING\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock} units\nMinimum Stock: ${item.minStock} units\nShortfall: ${item.minStock - item.actualStock} units\nEstimated Days Until Stockout: ~${Math.floor(item.actualStock / item.avgDemand)} days\n\nRECOMMENDED ACTIONS:\n1. Monitor consumption closely\n2. Consider ordering ${item.eoq} units soon\n3. Set up automatic alerts\n4. Review demand patterns\n5. Check supplier availability`;
+        message = `⚡ PERINGATAN STOK RENDAH\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock} unit\nStok Minimum: ${item.minStock} unit\nKekurangan: ${item.minStock - item.actualStock} unit\nEstimasi Hari Hingga Habis: ~${Math.floor(item.actualStock / item.avgDemand)} hari\n\nTINDAKAN YANG DIREKOMENDASIKAN:\n1. Pantau konsumsi dengan cermat\n2. Pertimbangkan untuk memesan ${item.eoq} unit segera\n3. Atur peringatan otomatis\n4. Tinjau pola permintaan\n5. Periksa ketersediaan pemasok`;
         break;
       case 'Overstock':
         const overstock = item.actualStock - item.maxStock;
-        message = `⚠️ OVERSTOCK SITUATION\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock} units\nMaximum Stock: ${item.maxStock} units\nOverstock Amount: ${overstock} units\nTied Capital: ${formatCurrency(overstock * item.unitCost)}\n\nRECOMMENDED ACTIONS:\n1. Run promotional campaign (20-30% discount)\n2. Transfer inventory to other locations\n3. Bundle with complementary products\n4. Contact sales team for bulk deals\n5. Reduce future order quantities\n6. Consider liquidation if aging`;
+        message = `⚠️ SITUASI STOK BERLEBIH\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock} unit\nStok Maksimum: ${item.maxStock} unit\nJumlah Stok Berlebih: ${overstock} unit\nModal Tertahan: ${formatCurrency(overstock * item.unitCost)}\n\nTINDAKAN YANG DIREKOMENDASIKAN:\n1. Jalankan kampanye promosi (diskon 20-30%)\n2. Transfer inventori ke lokasi lain\n3. Bundling dengan produk pelengkap\n4. Hubungi tim penjualan untuk penawaran grosir\n5. Kurangi kuantitas pesanan masa depan\n6. Pertimbangkan likuidasi jika produk menua`;
         break;
       default:
         message = `Action details for ${item.name} (${item.code})`;
@@ -814,8 +950,8 @@ setRecommendations(recs);
             <div className="flex items-center space-x-3">
               <Package className="h-10 w-10 text-blue-600" />
               <div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Penunjang Keputusan Stock Opname</h1>
-                <p className="text-sm sm:text-base text-gray-600">Analisis mendalam dengan metode ABC, EOQ, Safety Stock dan Reorder Point</p>
+                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sistem Penunjang Keputusan Stok Opname</h1>
+                <p className="text-sm sm:text-base text-gray-600">Analisis mendalam dengan metode ABC, EOQ, Stok Pengaman dan Titik Pemesanan Ulang</p>
               </div>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-3">
@@ -839,63 +975,63 @@ setRecommendations(recs);
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
           {/* ABC Classification */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">ABC Classification</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Klasifikasi ABC</h2>
             <div className="space-y-2">
               <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-                <span className="font-medium">Class A (High Value)</span>
+                <span className="font-medium">Kelas A (Nilai Tinggi)</span>
                 <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.abcClass === 'A').length} items
+                  {analysis.filter(item => item.abcClass === 'A').length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-yellow-50 rounded">
-                <span className="font-medium">Class B (Medium Value)</span>
+                <span className="font-medium">Kelas B (Nilai Sedang)</span>
                 <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.abcClass === 'B').length} items
+                  {analysis.filter(item => item.abcClass === 'B').length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-green-50 rounded">
-                <span className="font-medium">Class C (Low Value)</span>
+                <span className="font-medium">Kelas C (Nilai Rendah)</span>
                 <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.abcClass === 'C').length} items
+                  {analysis.filter(item => item.abcClass === 'C').length} item
                 </span>
               </div>
             </div>
           </div>
           
-          {/* Stock Status Distribution */}
+          {/* Status Stok Distribution */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">Stock Status Distribution</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Distribusi Status Stok</h2>
             <div className="space-y-2">
               <div className="flex justify-between items-center p-2 bg-green-50 rounded">
                 <span className="font-medium">Normal</span>
                 <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.stockStatus === 'Normal').length} items
+                  {analysis.filter(item => item.stockStatus === 'Normal').length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-yellow-50 rounded">
-                <span className="font-medium">Low Stock</span>
+                <span className="font-medium">Stok Rendah</span>
                 <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.stockStatus === 'Low Stock').length} items
+                  {analysis.filter(item => item.stockStatus === 'Low Stock').length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-                <span className="font-medium">Overstock</span>
+                <span className="font-medium">Stok Berlebih</span>
                 <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.stockStatus === 'Overstock').length} items
+                  {analysis.filter(item => item.stockStatus === 'Overstock').length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-orange-50 rounded">
-                <span className="font-medium">Reorder</span>
+                <span className="font-medium">Perlu Reorder</span>
                 <span className="bg-orange-100 text-orange-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.stockStatus === 'Reorder').length} items
+                  {analysis.filter(item => item.stockStatus === 'Reorder').length} item
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Top Products by Value */}
+          {/* Produk Teratas berdasarkan Nilai */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">Top Products by Inventory Value</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Produk Teratas berdasarkan Nilai Inventori</h2>
             <div className="space-y-2">
               {analysis.sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 5).map((item, index) => (
                 <div key={item.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
@@ -915,75 +1051,75 @@ setRecommendations(recs);
 
         {/* Additional Charts Row */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
-          {/* Variance Analysis */}
+          {/* Analisis Selisih */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">Variance Analysis</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Analisis Selisih</h2>
             <div className="space-y-2">
               <div className="flex justify-between items-center p-2 bg-green-50 rounded">
-                <span className="font-medium">Positive Variance</span>
+                <span className="font-medium">Selisih Positif</span>
                 <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.variance > 0).length} items
+                  {analysis.filter(item => item.variance > 0).length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-                <span className="font-medium">Negative Variance</span>
+                <span className="font-medium">Selisih Negatif</span>
                 <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.variance < 0).length} items
+                  {analysis.filter(item => item.variance < 0).length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                <span className="font-medium">No Variance</span>
+                <span className="font-medium">Tanpa Selisih</span>
                 <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.variance === 0).length} items
+                  {analysis.filter(item => item.variance === 0).length} item
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Turnover Ratio Analysis */}
+          {/* Analisis Rasio Perputaran */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">Inventory Turnover</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Perputaran Inventori</h2>
             <div className="space-y-2">
               <div className="flex justify-between items-center p-2 bg-green-50 rounded">
-                <span className="font-medium">High (&gt;6)</span>
+                <span className="font-medium">Tinggi (&gt;6)</span>
                 <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.turnoverRatio > 6).length} items
+                  {analysis.filter(item => item.turnoverRatio > 6).length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-yellow-50 rounded">
-                <span className="font-medium">Medium (3-6)</span>
+                <span className="font-medium">Sedang (3-6)</span>
                 <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.turnoverRatio >= 3 && item.turnoverRatio <= 6).length} items
+                  {analysis.filter(item => item.turnoverRatio >= 3 && item.turnoverRatio <= 6).length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-                <span className="font-medium">Low (&lt;3)</span>
+                <span className="font-medium">Rendah (&lt;3)</span>
                 <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.turnoverRatio < 3).length} items
+                  {analysis.filter(item => item.turnoverRatio < 3).length} item
                 </span>
               </div>
             </div>
           </div>
 
-          {/* EOQ vs Current Stock Comparison */}
+          {/* Perbandingan Stok vs EOQ */}
           <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">Stock vs EOQ Recommendations</h2>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Stok vs Rekomendasi EOQ</h2>
             <div className="space-y-2">
               <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
-                <span className="font-medium">Stock Below EOQ</span>
+                <span className="font-medium">Stok di Bawah EOQ</span>
                 <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.actualStock < item.eoq).length} items
+                  {analysis.filter(item => item.actualStock < item.eoq).length} item
                 </span>
               </div>
               <div className="flex justify-between items-center p-2 bg-green-50 rounded">
-                <span className="font-medium">Stock Above EOQ</span>
+                <span className="font-medium">Stok di Atas EOQ</span>
                 <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  {analysis.filter(item => item.actualStock >= item.eoq).length} items
+                  {analysis.filter(item => item.actualStock >= item.eoq).length} item
                 </span>
               </div>
               <div className="text-xs text-gray-600 mt-2">
-                <p>EOQ = Economic Order Quantity</p>
-                <p>Optimal order size for cost efficiency</p>
+                <p>EOQ = Kuantitas Pesanan Ekonomis</p>
+                <p>Ukuran pesanan optimal untuk efisiensi biaya</p>
               </div>
             </div>
           </div>
@@ -1054,11 +1190,56 @@ setRecommendations(recs);
           <section className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-6">
             <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center">
               <AlertTriangle className="h-5 w-5 mr-2 text-red-600" />
-              🚨 Urgency Ranking - SPK Priority Actions
+              🚨 Peringkat Urgensi - Tindakan Prioritas SPK
             </h2>
             <p className="text-sm text-gray-600 mb-6">
-              Items ranked by urgency score based on stock status, ABC classification, and business impact
+              Item diurutkan berdasarkan skor urgensi menggunakan analisis multi-kriteria AHP (Analytic Hierarchy Process):
+              Tingkat Stok (45%), Dampak Finansial (30%), Kritisitas Permintaan (15%), Risiko Lead Time (10%)
             </p>
+            
+            {/* Cara Membaca Skor Urgensi - Moved to top */}
+            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="font-bold text-gray-900 mb-2">📊 Cara Membaca Skor Urgensi:</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-2 bg-red-600 rounded"></div>
+                    <span className="font-medium text-red-600">83-100% (KRITIS)</span>
+                  </div>
+                  <p className="text-gray-600">🚨 Tindakan darurat diperlukan SEKARANG!</p>
+                  <p className="text-xs text-gray-500">Stok habis atau item bernilai tinggi</p>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-2 bg-orange-500 rounded"></div>
+                    <span className="font-medium text-orange-600">58-82% (TINGGI)</span>
+                  </div>
+                  <p className="text-gray-600">⚡ Tindakan diperlukan dalam hitungan hari</p>
+                  <p className="text-xs text-gray-500">Level reorder atau stok rendah</p>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-2 bg-yellow-500 rounded"></div>
+                    <span className="font-medium text-yellow-600">33-57% (SEDANG)</span>
+                  </div>
+                  <p className="text-gray-600">⚠️ Rencanakan tindakan dalam hitungan minggu</p>
+                  <p className="text-xs text-gray-500">Stok berlebih atau mendekati batas</p>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-2 bg-blue-500 rounded"></div>
+                    <span className="font-medium text-blue-600">8-32% (RENDAH)</span>
+                  </div>
+                  <p className="text-gray-600">👁️ Pantau situasi</p>
+                  <p className="text-xs text-gray-500">Pemantauan non-urgent</p>
+                </div>
+              </div>
+              <div className="mt-4 p-3 bg-blue-50 rounded border-l-4 border-blue-400">
+                <p className="text-sm text-blue-800">
+                  <strong>💡 Tips:</strong> Persentase yang lebih tinggi berarti tindakan yang lebih mendesak diperlukan. Warna bar sesuai dengan tingkat urgensi.
+                </p>
+              </div>
+            </div>
             
             <div className="space-y-4">
               {urgencyRankings.map((item, index) => (
@@ -1090,7 +1271,9 @@ setRecommendations(recs);
                             item.urgencyLevel === 'MEDIUM' ? 'bg-yellow-100 text-yellow-800' :
                             'bg-blue-100 text-blue-800'
                           }`}>
-                            {item.urgencyLevel}
+                            {item.urgencyLevel === 'CRITICAL' ? 'KRITIS' :
+                             item.urgencyLevel === 'HIGH' ? 'TINGGI' :
+                             item.urgencyLevel === 'MEDIUM' ? 'SEDANG' : 'RENDAH'}
                           </span>
                           <span className={`px-2 py-1 text-xs rounded-full ${getABCColor(item.abcClass)}`}>
                             Class {item.abcClass}
@@ -1103,7 +1286,7 @@ setRecommendations(recs);
                       
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-3">
                         <div>
-                          <p className="text-xs text-gray-500">Urgency Score</p>
+                          <p className="text-xs text-gray-500">Skor Urgensi</p>
                           <div className="flex items-center gap-2">
                             <div className={`w-16 h-3 bg-gray-200 rounded-full overflow-hidden`}>
                               <div 
@@ -1118,27 +1301,27 @@ setRecommendations(recs);
                             </div>
                             <span className="font-bold text-sm">{Math.round((item.urgencyScore / 12) * 100)}%</span>
                           </div>
-                          <p className="text-xs text-gray-600 mt-1">{item.urgencyScore} out of 12</p>
+                          <p className="text-xs text-gray-600 mt-1">{item.urgencyScore} dari 12</p>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-500">Business Impact</p>
+                          <p className="text-xs text-gray-500">Dampak Bisnis</p>
                           <p className="font-medium">{formatCurrency(item.businessImpact)}</p>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-500">Timeframe</p>
+                          <p className="text-xs text-gray-500">Jangka Waktu</p>
                           <p className="font-medium text-red-600">{item.timeframe}</p>
                         </div>
                         {item.daysUntilStockout && (
                           <div>
-                            <p className="text-xs text-gray-500">Days Until Stockout</p>
-                            <p className="font-bold text-red-600">~{item.daysUntilStockout} days</p>
+                            <p className="text-xs text-gray-500">Hari Hingga Habis</p>
+                            <p className="font-bold text-red-600">~{item.daysUntilStockout} hari</p>
                           </div>
                         )}
                       </div>
                       
                       <div className="mb-3">
-                        <p className="text-sm text-gray-700 mb-1"><strong>Reason:</strong> {item.reason}</p>
-                        <p className="text-sm text-blue-700"><strong>Recommended Action:</strong> {item.recommendedAction}</p>
+                        <p className="text-sm text-gray-700 mb-1"><strong>Alasan:</strong> {item.reason}</p>
+                        <p className="text-sm text-blue-700"><strong>Tindakan yang Direkomendasikan:</strong> {item.recommendedAction}</p>
                       </div>
                     </div>
                     
@@ -1180,49 +1363,6 @@ setRecommendations(recs);
                 </div>
               ))}
             </div>
-            
-            <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-              <h3 className="font-bold text-gray-900 mb-2">📊 How to Read Urgency Score:</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-4 h-2 bg-red-600 rounded"></div>
-                    <span className="font-medium text-red-600">83-100% (CRITICAL)</span>
-                  </div>
-                  <p className="text-gray-600">🚨 Emergency action needed NOW!</p>
-                  <p className="text-xs text-gray-500">Out of stock or high-value items</p>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-4 h-2 bg-orange-500 rounded"></div>
-                    <span className="font-medium text-orange-600">58-82% (HIGH)</span>
-                  </div>
-                  <p className="text-gray-600">⚡ Action needed within days</p>
-                  <p className="text-xs text-gray-500">Reorder level or low stock</p>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-4 h-2 bg-yellow-500 rounded"></div>
-                    <span className="font-medium text-yellow-600">33-57% (MEDIUM)</span>
-                  </div>
-                  <p className="text-gray-600">⚠️ Plan action within weeks</p>
-                  <p className="text-xs text-gray-500">Overstock or approaching limits</p>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-4 h-2 bg-blue-500 rounded"></div>
-                    <span className="font-medium text-blue-600">8-32% (LOW)</span>
-                  </div>
-                  <p className="text-gray-600">👁️ Monitor situation</p>
-                  <p className="text-xs text-gray-500">Non-urgent monitoring</p>
-                </div>
-              </div>
-              <div className="mt-4 p-3 bg-blue-50 rounded border-l-4 border-blue-400">
-                <p className="text-sm text-blue-800">
-                  <strong>💡 Tip:</strong> Higher percentages mean more urgent action needed. The bar color matches the urgency level.
-                </p>
-              </div>
-            </div>
           </section>
         )}
 
@@ -1242,10 +1382,10 @@ setRecommendations(recs);
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
               {/* Search Input */}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Search Product</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Cari Produk</label>
                 <input
                   type="text"
-                  placeholder="Name, code, or category"
+                  placeholder="Nama, kode, atau kategori"
                   value={filters.searchTerm}
                   onChange={(e) => setFilters({...filters, searchTerm: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
@@ -1254,45 +1394,45 @@ setRecommendations(recs);
               
               {/* Stock Status Filter */}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Stock Status</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Status Stok</label>
                 <select
                   value={filters.stockStatus}
                   onChange={(e) => setFilters({...filters, stockStatus: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="All">All Status</option>
+                  <option value="All">Semua Status</option>
                   <option value="Normal">Normal</option>
-                  <option value="Low Stock">Low Stock</option>
-                  <option value="Overstock">Overstock</option>
-                  <option value="Reorder">Reorder</option>
-                  <option value="Out of Stock">Out of Stock</option>
+                  <option value="Low Stock">Stok Rendah</option>
+                  <option value="Overstock">Stok Berlebih</option>
+                  <option value="Reorder">Perlu Reorder</option>
+                  <option value="Out of Stock">Habis Stok</option>
                 </select>
               </div>
               
               {/* ABC Class Filter */}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">ABC Class</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Kelas ABC</label>
                 <select
                   value={filters.abcClass}
                   onChange={(e) => setFilters({...filters, abcClass: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="All">All Classes</option>
-                  <option value="A">Class A (High Value)</option>
-                  <option value="B">Class B (Medium Value)</option>
-                  <option value="C">Class C (Low Value)</option>
+                  <option value="All">Semua Kelas</option>
+                  <option value="A">Kelas A (Nilai Tinggi)</option>
+                  <option value="B">Kelas B (Nilai Sedang)</option>
+                  <option value="C">Kelas C (Nilai Rendah)</option>
                 </select>
               </div>
               
               {/* Category Filter */}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Kategori</label>
                 <select
                   value={filters.category}
                   onChange={(e) => setFilters({...filters, category: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="All">All Categories</option>
+                  <option value="All">Semua Kategori</option>
                   {uniqueCategories.map(category => (
                     <option key={category} value={category}>{category}</option>
                   ))}
@@ -1301,17 +1441,17 @@ setRecommendations(recs);
               
               {/* Variance Type Filter */}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Variance Type</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Jenis Selisih</label>
                 <select
                   value={filters.varianceType}
                   onChange={(e) => setFilters({...filters, varianceType: e.target.value})}
                   className="w-full p-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="All">All Variance</option>
-                  <option value="Positive">Positive (+)</option>
-                  <option value="Negative">Negative (-)</option>
-                  <option value="Zero">Zero (0)</option>
-                  <option value="High Variance">High Variance (&gt;10%)</option>
+                  <option value="All">Semua Selisih</option>
+                  <option value="Positive">Positif (+)</option>
+                  <option value="Negative">Negatif (-)</option>
+                  <option value="Zero">Nol (0)</option>
+                  <option value="High Variance">Selisih Tinggi (&gt;10%)</option>
                 </select>
               </div>
               
@@ -1327,7 +1467,7 @@ setRecommendations(recs);
                   })}
                   className="w-full bg-gray-600 text-white px-3 py-2 rounded-md text-sm hover:bg-gray-700 transition-colors"
                 >
-                  Clear Filters
+                  Hapus Filter
                 </button>
               </div>
             </div>
@@ -1365,11 +1505,11 @@ setRecommendations(recs);
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Nilai Selisih</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">ABC</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Safety Stock</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reorder Point</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Stok Pengaman</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Titik Reorder</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">EOQ</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Turnover</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Perputaran</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Aksi</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -1392,36 +1532,36 @@ setRecommendations(recs);
                       {item.stockStatus === 'Reorder' && (
                         <button
                           onClick={() => {
-                            const message = `🔄 REORDER ACTION REQUIRED\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock}\nReorder Point: ${item.reorderPoint}\nRecommended Order Quantity (EOQ): ${item.eoq} units\n\nAction: Place order for ${item.eoq} units immediately!`;
+                            const message = `🔄 TINDAKAN REORDER DIPERLUKAN\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock}\nTitik Reorder: ${item.reorderPoint}\nKuantitas Pesanan yang Direkomendasikan (EOQ): ${item.eoq} unit\n\nTindakan: Buat pesanan untuk ${item.eoq} unit segera!`;
                             alert(message);
                           }}
                           className="bg-orange-500 text-white px-3 py-1 rounded text-xs hover:bg-orange-600 transition-colors"
                         >
-                          Reorder Now
+                          Pesan Sekarang
                         </button>
                       )}
                       {item.stockStatus === 'Overstock' && (
                         <button
                           onClick={() => {
                             const overstock = item.actualStock - item.maxStock;
-                            const message = `⚠️ OVERSTOCK ACTION REQUIRED\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock}\nMax Stock: ${item.maxStock}\nOverstock Amount: ${overstock} units\n\nRecommended Actions:\n• Run promotional campaign\n• Transfer to other locations\n• Reduce future orders\n• Consider bulk discounts`;
+                            const message = `⚠️ TINDAKAN STOK BERLEBIH DIPERLUKAN\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock}\nStok Maksimum: ${item.maxStock}\nJumlah Stok Berlebih: ${overstock} unit\n\nTindakan yang Direkomendasikan:\n• Jalankan kampanye promosi\n• Transfer ke lokasi lain\n• Kurangi pesanan masa depan\n• Pertimbangkan diskon grosir`;
                             alert(message);
                           }}
                           className="bg-red-500 text-white px-3 py-1 rounded text-xs hover:bg-red-600 transition-colors"
                         >
-                          Reduce Stock
+                          Kurangi Stok
                         </button>
                       )}
                       {item.stockStatus === 'Low Stock' && (
                         <button
                           onClick={() => {
                             const shortfall = item.minStock - item.actualStock;
-                            const message = `⚡ LOW STOCK WARNING\n\nProduct: ${item.name} (${item.code})\nCurrent Stock: ${item.actualStock}\nMinimum Stock: ${item.minStock}\nShortfall: ${shortfall} units\n\nAction: Consider ordering ${item.eoq} units to maintain optimal levels.`;
+                            const message = `⚡ PERINGATAN STOK RENDAH\n\nProduk: ${item.name} (${item.code})\nStok Saat Ini: ${item.actualStock}\nStok Minimum: ${item.minStock}\nKekurangan: ${shortfall} unit\n\nTindakan: Pertimbangkan untuk memesan ${item.eoq} unit untuk menjaga level optimal.`;
                             alert(message);
                           }}
                           className="bg-yellow-500 text-white px-3 py-1 rounded text-xs hover:bg-yellow-600 transition-colors"
                         >
-                          Monitor
+                          Pantau
                         </button>
                       )}
                       {item.stockStatus === 'Normal' && (
@@ -1458,9 +1598,9 @@ setRecommendations(recs);
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Stok Sistem</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Stok Aktual</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Harga</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Min/Max</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Lead Time</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Avg Demand</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Min/Maks</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Waktu Tunggu</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Permintaan Rata2</th>
                   <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Aksi</th>
                 </tr>
               </thead>
